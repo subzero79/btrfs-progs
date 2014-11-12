@@ -35,6 +35,7 @@
 #include "utils.h"
 #include "print-tree.h"
 #include "rbtree-utils.h"
+#include "find-root.h"
 
 static int check_tree_block(struct btrfs_root *root, struct extent_buffer *buf)
 {
@@ -894,9 +895,34 @@ int btrfs_setup_all_roots(struct btrfs_fs_info *fs_info, u64 root_tree_bytenr,
 	blocksize = btrfs_level_size(root, btrfs_super_root_level(sb));
 	generation = btrfs_super_generation(sb);
 
-	if (!root_tree_bytenr && !(flags & OPEN_CTREE_BACKUP_ROOT)) {
+	/*
+	 * If use specific the root bytenr, use it and if fails,
+	 * just return error, stop trying other method.
+	 */
+	if (root_tree_bytenr) {
+		root->node = read_tree_block(root, root_tree_bytenr, blocksize,
+					     generation);
+		if (!extent_buffer_uptodate(root->node)) {
+			fprintf(stderr, "Couldn't read tree root\n");
+			return -EIO;
+		} else
+			goto extent_tree;
+	}
+
+	/* Normal root bytenr from super */
+	if (!(flags & OPEN_CTREE_BACKUP_ROOT)) {
 		root_tree_bytenr = btrfs_super_root(sb);
-	} else if (flags & OPEN_CTREE_BACKUP_ROOT) {
+		root->node = read_tree_block(root, root_tree_bytenr, blocksize,
+					     generation);
+		if (!extent_buffer_uptodate(root->node)) {
+			fprintf(stderr, "Couldn't read tree root, try backup\n");
+			ret = -EAGAIN;
+		} else
+			goto extent_tree;
+	}
+
+	/* Backup tree roots */
+	if ((flags & OPEN_CTREE_BACKUP_ROOT) || ret == -EAGAIN) {
 		struct btrfs_root_backup *backup;
 		int index = find_best_backup_root(sb);
 		if (index >= BTRFS_NUM_BACKUP_ROOTS) {
@@ -906,15 +932,67 @@ int btrfs_setup_all_roots(struct btrfs_fs_info *fs_info, u64 root_tree_bytenr,
 		backup = fs_info->super_copy->super_roots + index;
 		root_tree_bytenr = btrfs_backup_tree_root(backup);
 		generation = btrfs_backup_tree_root_gen(backup);
+		root->node = read_tree_block(root, root_tree_bytenr, blocksize,
+					     generation);
+		if (!extent_buffer_uptodate(root->node)) {
+			fprintf(stderr,
+			 "Couldn't read backup tree root, try searching tree root\n");
+			ret = -EAGAIN;
+		} else {
+			goto extent_tree;
+		}
 	}
 
-	root->node = read_tree_block(root, root_tree_bytenr, blocksize,
-				     generation);
-	if (!extent_buffer_uptodate(root->node)) {
-		fprintf(stderr, "Couldn't read tree root\n");
-		return -EIO;
+	/* Last chance, searching the tree root */
+	if (ret == -EAGAIN) {
+		struct find_root_search_filter search;
+		struct list_head result_list;
+		struct find_root_gen_entry *gene;
+		struct find_root_eb_entry *ebe;
+
+		search.super_gen = btrfs_super_generation(fs_info->super_copy);
+		search.objectid = BTRFS_ROOT_TREE_OBJECTID;
+		search.search_all = 0;
+		search.level = 0;
+		search.generation = 0;
+		INIT_LIST_HEAD(&result_list);
+
+		printf("Searching tree root...");
+		ret = find_root_start(fs_info->chunk_root, &result_list,
+				      &search);
+		if (ret < 0) {
+			fprintf(stderr, "Fail to search the tree root\n");
+			find_root_free(&result_list);
+			return -EIO;
+		}
+
+		if (list_empty(&result_list)) {
+			fprintf(stderr, "Fail to find and tree root\n");
+			find_root_free(&result_list);
+			return -EIO;
+		}
+		gene = list_entry(result_list.prev, struct find_root_gen_entry,
+				  gen_list);
+		if ((gene->eb_list.next)->next != (&gene->eb_list)) {
+			/* Serveral same level leaf found, not root */
+			fprintf(stderr, "Fail to find and tree root\n");
+			find_root_free(&result_list);
+			return -EIO;
+		}
+		/* Not the most possible root is found use it  */
+		ebe = list_entry(gene->eb_list.next, struct find_root_eb_entry,
+				 list);
+		root_tree_bytenr = btrfs_header_bytenr(ebe->eb);
+		find_root_free(&result_list);
+		root->node = read_tree_block(root, root_tree_bytenr, blocksize,
+					     generation);
+		if (!extent_buffer_uptodate(root->node)) {
+			fprintf(stderr, "Couldn't read most possible tree root\n");
+			return -EIO;
+		}
 	}
 
+extent_tree:
 	ret = setup_root_or_create_block(fs_info, flags, fs_info->extent_root,
 					 BTRFS_EXTENT_TREE_OBJECTID, "extent");
 	if (ret)
