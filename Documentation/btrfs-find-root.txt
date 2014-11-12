@@ -22,6 +22,8 @@ Filter root tree by it's original transaction id, tree root's generation in defa
 Filter root tree by it's objectid,tree root's objectid in default.
 -l <level>::
 Filter root tree by B-+ tree's level, level 0 in default.
+-a::
+Search for all root even the desired root is already found.
 
 EXIT STATUS
 -----------

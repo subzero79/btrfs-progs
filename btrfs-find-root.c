@@ -35,266 +35,250 @@
 #include "utils.h"
 #include "crc32c.h"
 
-static u16 csum_size = 0;
-static u64 search_objectid = BTRFS_ROOT_TREE_OBJECTID;
-static u64 search_generation = 0;
-static unsigned long search_level = 0;
+/*
+ * find root result is a list like the following:
+ *
+ * result_list
+ *    |
+ *    gen_list	<->	gen_list	<->	gen_list ...
+ *    gen:4		gen:5			gen:6
+ *    level:0		level:1			level:2
+ *    level_list	level_list		level_list
+ *    |-l 0's eb	|-l 1'eb(possible root)	|-l 2'eb(possible root)
+ *    |-l 0's eb
+ *    ...
+ *    level_list only contains the highest level's eb.
+ *    if level_list only contains 1 eb, that may be root.
+ *    if multiple, the root is already overwritten.
+ */
+struct eb_entry{
+	struct list_head list;
+	struct extent_buffer *eb;
+};
+
+struct generation_entry{
+	struct list_head gen_list;
+	struct list_head eb_list;
+	u64 generation;
+	u8 level;
+};
+
+struct search_filter {
+	u64 objectid;
+	u64 generation;
+	u64 level;
+	u64 super_gen;
+	int search_all;
+};
 
 static void usage(void)
 {
 	fprintf(stderr, "Usage: find-roots [-o search_objectid] "
-		"[ -g search_generation ] [ -l search_level ] <device>\n");
+		"[ -g search_generation ] [ -l search_level ] [ -a ] "
+		"[ -s [+-]{objectid|generation} ] <device>\n");
 }
 
-static int csum_block(void *buf, u32 len)
+static inline void print_message(struct eb_entry *ebe,
+				 struct btrfs_super_block *super)
 {
-	char *result;
-	u32 crc = ~(u32)0;
+	u64 generation = btrfs_header_generation(ebe->eb);
+
+	if (generation != btrfs_super_generation(super))
+		printf("Well block %llu seems great, but generation doesn't match, have=%llu, want=%llu level %u\n",
+			btrfs_header_bytenr(ebe->eb),
+			btrfs_header_generation(ebe->eb),
+			btrfs_super_generation(super),
+			btrfs_header_level(ebe->eb));
+	else
+		printf("Found tree root at %llu gen %llu level %u\n",
+			btrfs_header_bytenr(ebe->eb),
+			btrfs_header_generation(ebe->eb),
+			btrfs_header_level(ebe->eb));
+}
+
+static void print_result(struct btrfs_root *chunk_root,
+			 struct list_head *result_list)
+{
+	struct btrfs_super_block *super = chunk_root->fs_info->super_copy;
+	struct eb_entry *ebe;
+	struct generation_entry *gene;
+
+	printf("Super think's the tree root is at %llu, chunk root %llu\n",
+	       btrfs_super_root(super), btrfs_super_chunk_root(super));
+	list_for_each_entry(gene, result_list, gen_list)
+		list_for_each_entry(ebe, &gene->eb_list, list)
+			print_message(ebe, super);
+}
+
+static int add_eb_to_gen(struct extent_buffer *eb,
+			 struct generation_entry *gene)
+{
+	struct list_head *pos;
+	struct eb_entry *ebe;
+	struct eb_entry *n;
+	struct eb_entry *new;
+	u8 level = btrfs_header_level(eb);
+	u64 bytenr = btrfs_header_bytenr(eb);
+
+	if (level < gene->level)
+		goto free_out;
+
+	new = malloc(sizeof(*new));
+	if (!new)
+		return -ENOMEM;
+	new->eb = eb;
+
+	if (level > gene->level) {
+		gene->level = level;
+		list_for_each_entry_safe(ebe, n, &gene->eb_list, list) {
+			list_del(&ebe->list);
+			free_extent_buffer(ebe->eb);
+			free(ebe);
+		}
+		list_add(&new->list, &gene->eb_list);
+		return 0;
+	}
+	list_for_each(pos, &gene->eb_list) {
+		ebe = list_entry(pos, struct eb_entry, list);
+		if (btrfs_header_bytenr(ebe->eb) > bytenr) {
+			pos = pos->prev;
+			break;
+		}
+	}
+	list_add_tail(&new->list, pos);
+	return 0;
+free_out:
+	free_extent_buffer(eb);
+	return 0;
+}
+
+static int add_eb_to_result(struct extent_buffer *eb,
+			    struct list_head *result_list,
+			    struct search_filter *search)
+{
+	struct list_head *pos;
+	struct generation_entry *gene;
+	struct generation_entry *new;
+	u64 generation = btrfs_header_generation(eb);
+	u64 level = btrfs_header_level(eb);
+	u64 owner = btrfs_header_owner(eb);
+	int found = 0;
 	int ret = 0;
 
-	result = malloc(csum_size * sizeof(char));
-	if (!result) {
-		fprintf(stderr, "No memory\n");
-		return 1;
+	if (owner != search->objectid || level < search->level ||
+	    generation < search->generation)
+		goto free_out;
+
+	list_for_each(pos, result_list) {
+		gene = list_entry(pos, struct generation_entry, gen_list);
+		if (gene->generation == generation) {
+			found = 1;
+			break;
+		}
+		if (gene->generation > generation) {
+			pos = pos->prev;
+			break;
+		}
 	}
-
-	len -= BTRFS_CSUM_SIZE;
-	crc = crc32c(crc, buf + BTRFS_CSUM_SIZE, len);
-	btrfs_csum_final(crc, result);
-
-	if (memcmp(buf, result, csum_size))
+	if (found) {
+		ret = add_eb_to_gen(eb, gene);
+	} else {
+		new = malloc(sizeof(*new));
+		if (!new) {
+			ret = -ENOMEM;
+			goto free_out;
+		}
+		new->generation = generation;
+		new->level = 0;
+		INIT_LIST_HEAD(&new->gen_list);
+		INIT_LIST_HEAD(&new->eb_list);
+		list_add_tail(&new->gen_list, pos);
+		ret = add_eb_to_gen(eb, new);
+	}
+	if (ret)
+		goto free_out;
+	if (generation == search->super_gen && !search->search_all)
 		ret = 1;
-	free(result);
+	return ret;
+free_out:
+	free_extent_buffer(eb);
 	return ret;
 }
-
-static struct btrfs_root *open_ctree_broken(int fd, const char *device)
+static int find_root(struct btrfs_root *chunk_root,
+		     struct list_head *result_list,
+		     struct search_filter *search)
 {
-	struct btrfs_fs_info *fs_info;
-	struct btrfs_super_block *disk_super;
-	struct btrfs_fs_devices *fs_devices = NULL;
 	struct extent_buffer *eb;
-	int ret;
+	struct btrfs_fs_info *fs_info = chunk_root->fs_info;
+	u64 metadata_offset = 0;
+	u64 metadata_size = 0;
+	u64 offset;
+	u64 leafsize = btrfs_super_leafsize(fs_info->super_copy);
+	int ret = 0;
 
-	fs_info = btrfs_new_fs_info(0, BTRFS_SUPER_INFO_OFFSET);
-	if (!fs_info) {
-		fprintf(stderr, "Failed to allocate memory for fs_info\n");
-		return NULL;
-	}
-
-	ret = btrfs_scan_fs_devices(fd, device, &fs_devices, 0, 1);
-	if (ret)
-		goto out;
-
-	fs_info->fs_devices = fs_devices;
-
-	ret = btrfs_open_devices(fs_devices, O_RDONLY);
-	if (ret)
-		goto out_devices;
-
-	disk_super = fs_info->super_copy;
-	ret = btrfs_read_dev_super(fs_devices->latest_bdev,
-				   disk_super, fs_info->super_bytenr, 1);
-	if (ret) {
-		printk("No valid btrfs found\n");
-		goto out_devices;
-	}
-
-	memcpy(fs_info->fsid, &disk_super->fsid, BTRFS_FSID_SIZE);
-
-	ret = btrfs_check_fs_compatibility(disk_super, 0);
-	if (ret)
-		goto out_devices;
-
-	ret = btrfs_setup_chunk_tree_and_device_map(fs_info);
-	if (ret)
-		goto out_chunk;
-
-	eb = fs_info->chunk_root->node;
-	read_extent_buffer(eb, fs_info->chunk_tree_uuid,
-			   btrfs_header_chunk_tree_uuid(eb), BTRFS_UUID_SIZE);
-
-	return fs_info->chunk_root;
-out_chunk:
-	free_extent_buffer(fs_info->chunk_root->node);
-	btrfs_cleanup_all_caches(fs_info);
-out_devices:
-	btrfs_close_devices(fs_info->fs_devices);
-out:
-	btrfs_free_fs_info(fs_info);
-	return NULL;
-}
-
-static int search_iobuf(struct btrfs_root *root, void *iobuf,
-			size_t iobuf_size, off_t offset)
-{
-	u64 gen = search_generation;
-	u64 objectid = search_objectid;
-	u32 size = btrfs_super_nodesize(root->fs_info->super_copy);
-	u8 level = search_level;
-	size_t block_off = 0;
-
-	while (block_off < iobuf_size) {
-		void *block = iobuf + block_off;
-		struct btrfs_header *header = block;
-		u64 h_byte, h_level, h_gen, h_owner;
-
-//		printf("searching %Lu\n", offset + block_off);
-		h_byte = btrfs_stack_header_bytenr(header);
-		h_owner = btrfs_stack_header_owner(header);
-		h_level = header->level;
-		h_gen = btrfs_stack_header_generation(header);
-
-		if (h_owner != objectid)
-			goto next;
-		if (h_byte != (offset + block_off))
-			goto next;
-		if (h_level < level)
-			goto next;
-		level = h_level;
-		if (csum_block(block, size)) {
-			fprintf(stderr, "Well block %Lu seems good, "
-				"but the csum doesn't match\n",
-				h_byte);
-			goto next;
-		}
-		if (h_gen != gen) {
-			fprintf(stderr, "Well block %Lu seems great, "
-				"but generation doesn't match, "
-				"have=%Lu, want=%Lu level %Lu\n", h_byte,
-				h_gen, gen, h_level);
-			goto next;
-		}
-		printf("Found tree root at %Lu gen %Lu level %Lu\n", h_byte,
-		       h_gen, h_level);
-		return 0;
-next:
-		block_off += size;
-	}
-
-	return 1;
-}
-
-static int read_physical(struct btrfs_root *root, int fd, u64 offset,
-			 u64 bytenr, u64 len)
-{
-	char *iobuf = malloc(len);
-	ssize_t done;
-	size_t total_read = 0;
-	int ret = 1;
-
-	if (!iobuf) {
-		fprintf(stderr, "No memory\n");
-		return -1;
-	}
-
-	while (total_read < len) {
-		done = pread64(fd, iobuf + total_read, len - total_read,
-			       bytenr + total_read);
-		if (done < 0) {
-			fprintf(stderr, "Failed to read: %s\n",
-				strerror(errno));
-			ret = -1;
-			goto out;
-		}
-		total_read += done;
-	}
-
-	ret = search_iobuf(root, iobuf, total_read, offset);
-out:
-	free(iobuf);
-	return ret;
-}
-
-static int find_root(struct btrfs_root *root)
-{
-	struct btrfs_multi_bio *multi = NULL;
-	struct btrfs_device *device;
-	u64 metadata_offset = 0, metadata_size = 0;
-	off_t offset = 0;
-	off_t bytenr;
-	int fd;
-	int err;
-	int ret = 1;
-
-	printf("Super think's the tree root is at %Lu, chunk root %Lu\n",
-	       btrfs_super_root(root->fs_info->super_copy),
-	       btrfs_super_chunk_root(root->fs_info->super_copy));
-
-	err = btrfs_next_metadata(&root->fs_info->mapping_tree,
-				  &metadata_offset, &metadata_size);
-	if (err)
-		return ret;
-
-	offset = metadata_offset;
 	while (1) {
-		u64 map_length = 4096;
-		u64 type;
-
-		if (offset >
-		    btrfs_super_total_bytes(root->fs_info->super_copy)) {
-			printf("Went past the fs size, exiting");
+		ret = btrfs_next_metadata(&chunk_root->fs_info->mapping_tree,
+					  &metadata_offset, &metadata_size);
+		if (ret) {
+			if (ret == -ENOENT)
+				ret = 0;
 			break;
 		}
-		if (offset >= (metadata_offset + metadata_size)) {
-			err = btrfs_next_metadata(&root->fs_info->mapping_tree,
-						  &metadata_offset,
-						  &metadata_size);
-			if (err) {
-				printf("No more metdata to scan, exiting\n");
-				break;
+		for (offset = metadata_offset;
+		     offset < metadata_offset + metadata_size;
+		     offset += leafsize) {
+			eb = read_tree_block(chunk_root, offset, leafsize, 0);
+			if (!eb || IS_ERR(eb))
+				continue;
+			ret = add_eb_to_result(eb, result_list, search);
+			if (ret) {
+				ret = ret > 0 ? 0 : ret;
+				return ret;
 			}
-			offset = metadata_offset;
 		}
-		err = __btrfs_map_block(&root->fs_info->mapping_tree, READ,
-				      offset, &map_length, &type,
-				      &multi, 0, NULL);
-		if (err) {
-			offset += map_length;
-			continue;
-		}
-
-		if (!(type & BTRFS_BLOCK_GROUP_METADATA)) {
-			offset += map_length;
-			kfree(multi);
-			continue;
-		}
-
-		device = multi->stripes[0].dev;
-		fd = device->fd;
-		bytenr = multi->stripes[0].physical;
-		kfree(multi);
-
-		err = read_physical(root, fd, offset, bytenr, map_length);
-		if (!err) {
-			ret = 0;
-			break;
-		} else if (err < 0) {
-			ret = err;
-			break;
-		}
-		offset += map_length;
 	}
 	return ret;
+}
+
+static void free_result_list(struct list_head *result_list)
+{
+	struct eb_entry *ebe;
+	struct eb_entry *ebtmp;
+	struct generation_entry *gene;
+	struct generation_entry *gentmp;
+
+	list_for_each_entry_safe(gene, gentmp, result_list, gen_list) {
+		list_for_each_entry_safe(ebe, ebtmp,&gene->eb_list, list) {
+			list_del(&ebe->list);
+			free_extent_buffer(ebe->eb);
+			free(ebe);
+		}
+		list_del(&gene->gen_list);
+		free(gene);
+	}
 }
 
 int main(int argc, char **argv)
 {
-	struct btrfs_root *root;
-	int dev_fd;
+	struct btrfs_root *chunk_root;
+	struct list_head result_list;
+	struct search_filter search = {BTRFS_ROOT_TREE_OBJECTID, 0 ,0, 0};
 	int opt;
 	int ret;
 
-	while ((opt = getopt(argc, argv, "l:o:g:")) != -1) {
+	while ((opt = getopt(argc, argv, "l:o:g:a")) != -1) {
 		switch(opt) {
 			case 'o':
-				search_objectid = arg_strtou64(optarg);
+				search.objectid = arg_strtou64(optarg);
 				break;
 			case 'g':
-				search_generation = arg_strtou64(optarg);
+				search.generation = arg_strtou64(optarg);
 				break;
 			case 'l':
-				search_level = arg_strtou64(optarg);
+				search.level = arg_strtou64(optarg);
+				break;
+			case 'a':
+				search.search_all = 1;
 				break;
 			default:
 				usage();
@@ -304,30 +288,23 @@ int main(int argc, char **argv)
 
 	set_argv0(argv);
 	argc = argc - optind;
-	if (check_argc_min(argc, 1)) {
+	if (check_argc_exact(argc, 1)) {
 		usage();
 		exit(1);
 	}
 
-	dev_fd = open(argv[optind], O_RDONLY);
-	if (dev_fd < 0) {
-		fprintf(stderr, "Failed to open device %s\n", argv[optind]);
-		exit(1);
-	}
-
-	root = open_ctree_broken(dev_fd, argv[optind]);
-	close(dev_fd);
-
-	if (!root) {
+	chunk_root = open_ctree(argv[optind], 0, OPEN_CTREE_CHUNK_ONLY);
+	if (!chunk_root) {
 		fprintf(stderr, "Open ctree failed\n");
 		exit(1);
 	}
 
-	if (search_generation == 0)
-		search_generation = btrfs_super_generation(root->fs_info->super_copy);
-
-	csum_size = btrfs_super_csum_size(root->fs_info->super_copy);
-	ret = find_root(root);
-	close_ctree(root);
+	search.super_gen =
+		btrfs_super_generation(chunk_root->fs_info->super_copy);
+	INIT_LIST_HEAD(&result_list);
+	ret = find_root(chunk_root, &result_list, &search);
+	print_result(chunk_root, &result_list);
+	free_result_list(&result_list);
+	close_ctree(chunk_root);
 	return ret;
 }
