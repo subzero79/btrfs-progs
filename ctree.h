@@ -1039,6 +1039,16 @@ struct btrfs_root {
 	u64 highest_inode;
 	u64 last_inode_alloc;
 
+	/*
+	 * Record orphan data extent ref
+	 *
+	 * TODO: Don't restore things in btrfs_root.
+	 * Directly record it into inode_record, which needs a lot of
+	 * infrastructure change to allow cooperation between extent
+	 * and fs tree scan.
+	 */
+	struct list_head orphan_data_extents;
+
 	/* the dirty list is only used by non-reference counted roots */
 	struct list_head dirty_list;
 	struct rb_node rb_node;
@@ -2458,4 +2468,13 @@ int btrfs_add_orphan_item(struct btrfs_trans_handle *trans,
 			  u64 ino);
 int btrfs_mkdir(struct btrfs_trans_handle *trans, struct btrfs_root *root,
 		char *name, int namelen, u64 parent_ino, u64 *ino, int mode);
+
+/* file.c */
+int btrfs_get_extent(struct btrfs_trans_handle *trans,
+		     struct btrfs_root *root,
+		     struct btrfs_path *path,
+		     u64 ino, u64 offset, u64 len, int ins_len);
+int btrfs_punch_hole(struct btrfs_trans_handle *trans,
+		     struct btrfs_root *root,
+		     u64 ino, u64 offset, u64 len);
 #endif
