@@ -604,8 +604,8 @@ static int generic_bin_search(struct extent_buffer *eb, unsigned long p,
  * simple bin_search frontend that does the right thing for
  * leaves vs nodes
  */
-static int bin_search(struct extent_buffer *eb, struct btrfs_key *key,
-		      int level, int *slot)
+int bin_search(struct extent_buffer *eb, struct btrfs_key *key,
+	       int level, int *slot)
 {
 	if (level == 0)
 		return generic_bin_search(eb,

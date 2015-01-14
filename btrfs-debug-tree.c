@@ -31,18 +31,23 @@
 
 static int print_usage(void)
 {
-	fprintf(stderr, "usage: btrfs-debug-tree [-e] [-d] [-r] [-R] [-u]\n");
-	fprintf(stderr, "                        [-b block_num ] device\n");
+	fprintf(stderr, "usage: btrfs-debug-tree [-e] [-d] [-r] [-R] [-u] [-B]\n");
+	fprintf(stderr, "                        [-t tree_id] device\n");
+	fprintf(stderr, "       btrfs-debug-tree [-b block_num [-f]] device\n");
 	fprintf(stderr, "\t-e : print detailed extents info\n");
 	fprintf(stderr, "\t-d : print info of btrfs device and root tree dirs"
                     " only\n");
 	fprintf(stderr, "\t-r : print info of roots only\n");
 	fprintf(stderr, "\t-R : print info of roots and root backups\n");
 	fprintf(stderr, "\t-u : print info of uuid tree only\n");
-	fprintf(stderr, "\t-b block_num : print info of the specified block"
-                    " only\n");
 	fprintf(stderr,
 		"\t-t tree_id : print only the tree with the given id\n");
+	fprintf(stderr,
+		"\t-B nr: use root backup <nr> instead of real root\n");
+	fprintf(stderr, "\t-b block_num : print info of the specified block"
+                    " only\n");
+	fprintf(stderr, "\t-f : (with -b) follow subtree of the specified"
+		" block\n");
 	fprintf(stderr, "%s\n", BTRFS_BUILD_VERSION);
 	exit(1);
 }
@@ -68,13 +73,23 @@ static void print_extents(struct btrfs_root *root, struct extent_buffer *eb)
 					     btrfs_node_blockptr(eb, i),
 					     size,
 					     btrfs_node_ptr_generation(eb, i));
-		if (btrfs_is_leaf(next) &&
-		    btrfs_header_level(eb) != 1)
-			BUG();
 		if (btrfs_header_level(next) !=
-			btrfs_header_level(eb) - 1)
-			BUG();
-		print_extents(root, next);
+		    btrfs_header_level(eb) - 1) {
+			fprintf(stderr, "EXTENT TREE CORRUPTION detected at %llu, "
+				"slot %d pointing at %llu.\n"
+				"\tExpected child level: %d, found %d\n"
+				"\tExpected tree/transid: %llu/%llu,"
+				" found %llu/%llu\n",
+				eb->start, i, next->start,
+				btrfs_header_level(eb) - 1,
+				btrfs_header_level(next),
+				(unsigned long long)btrfs_header_owner(eb),
+				(unsigned long long)btrfs_header_generation(eb),
+				(unsigned long long)btrfs_header_owner(next),
+				(unsigned long long)
+				btrfs_header_generation(next));
+		} else
+			print_extents(root, next);
 		free_extent_buffer(next);
 	}
 }
@@ -137,6 +152,8 @@ int main(int ac, char **av)
 	int roots_only = 0;
 	int root_backups = 0;
 	u64 block_only = 0;
+	int block_follow = 0;
+	int use_backup = -1;
 	struct btrfs_root *tree_root_scan;
 	u64 tree_id = 0;
 
@@ -144,7 +161,7 @@ int main(int ac, char **av)
 
 	while(1) {
 		int c;
-		c = getopt(ac, av, "deb:rRut:");
+		c = getopt(ac, av, "defb:rRut:B:");
 		if (c < 0)
 			break;
 		switch(c) {
@@ -167,8 +184,14 @@ int main(int ac, char **av)
 			case 'b':
 				block_only = arg_strtou64(optarg);
 				break;
+			case 'f':
+				block_follow = 1;
+				break;
 			case 't':
 				tree_id = arg_strtou64(optarg);
+				break;
+			case 'B':
+				use_backup = arg_strtou64(optarg);
 				break;
 			default:
 				print_usage();
@@ -218,8 +241,39 @@ int main(int ac, char **av)
 				(unsigned long long)block_only);
 			goto close_root;
 		}
-		btrfs_print_tree(root, leaf, 0);
+		btrfs_print_tree(root, leaf, block_follow);
 		goto close_root;
+	}
+
+	if (use_backup >= BTRFS_NUM_BACKUP_ROOTS) {
+		fprintf(stderr, "Invalid backup root number %d\n",
+			use_backup);
+		exit(1);
+	} else if (use_backup >= 0) {
+		u64 bytenr, generation;
+		u32 blocksize;
+		struct btrfs_super_block *sb = info->super_copy;
+		struct btrfs_root_backup *backup = sb->super_roots + use_backup;
+		struct extent_buffer *eb;
+		bytenr = btrfs_backup_tree_root(backup);
+		generation = btrfs_backup_tree_root_gen(backup);
+		blocksize = btrfs_level_size(info->tree_root,
+					     btrfs_super_root_level(sb));
+		eb = info->tree_root->node;
+		info->tree_root->node = read_tree_block(root, bytenr,
+							blocksize, generation);
+		free_extent_buffer(eb);
+		bytenr = btrfs_backup_chunk_root(backup);
+		generation = btrfs_backup_chunk_root_gen(backup);
+		eb =  info->chunk_root->node;
+		info->chunk_root->node = read_tree_block(root, bytenr,
+							blocksize, generation);
+		free_extent_buffer(eb);
+		if (!extent_buffer_uptodate(info->tree_root->node) ||
+		    !extent_buffer_uptodate(info->tree_root->node)) {
+			fprintf(stderr, "Couldn't backup root\n");
+			return 1;
+		}
 	}
 
 	if (!(extent_only || uuid_tree_only || tree_id)) {

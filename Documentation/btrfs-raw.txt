@@ -1,0 +1,54 @@
+btrfs-raw(8)
+============
+
+NAME
+----
+btrfs-raw - low-level manipulation of btrfs meta data blocks.
+
+SYNOPSIS
+--------
+*btrfs-raw* [[-r|-w] <bytenr>] <device>
+
+DESCRIPTION
+-----------
+*btrfs-raw* is used to dump the raw contents of the given logical block
+of a btrfs device to stdout, or write raw data read from stdin to the
+given logical block.
+
+*THIS TOOL IS DANGEROUS; IT MAY CORRUPT YOUR FILESYSTEM BEYOND REPAIR!!*
+
+Please exert extreme caution when writing modified blocks to disk. You
+should make a backup copy of the entire file system before doing so, even
+if the file system is already corrupted. Make sure you have a thorough
+understanding of the btrfs disk data structures before making any changes.
+
+*YOU USE THIS TOOL AT YOUR OWN RISK!*
+
+OPTIONS
+-------
+-r <bytenr>::
+Read the logical block starting at <bytenr> and write the raw contents
+to stdout (caution, binary data).
+-w <bytenr>::
+Write the logical block starting at <bytenr> to disk, reading data from
+stdin. The tool will adjust the header checksum before writing to disk.
+
+EXIT STATUS
+-----------
+*btrfs-raw* will return 0 if no error happened.
+If any problems happened, 1 will be returned.
+
+EXAMPLE
+-------
+
+`btrfs-raw -r 874991616 /dev/sda >/tmp/blob`
+
+`btrfs-raw -w 874991616 /dev/sda </tmp/blob`
+
+Dump the data of the given block to a file and write it back.
+Between these operations, a hex editor could be used to manually fix
+inconsistencies in the meta data.
+
+SEE ALSO
+--------
+`mkfs.btrfs`(8), `btrfs-debug-tree`(8)

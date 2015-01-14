@@ -25,8 +25,18 @@ Print detailed extents info.
 Print info of btrfs device and root tree dirs only.
 -r::
 Print info of roots only.
+-u::
+Print info of UUID tree only.
+-R::
+Print info of roots and root backups.
+-t <object id>::
+Only print the subvolume tree with given object ID.
+-B <backup_num>::
+Start at backup root from superblock rather than current root.
 -b <block_num>::
 Print info of the specified block only.
+-f::
+Follow (descend) the (sub)tree rooted at the block given with -b.
 
 EXIT STATUS
 -----------

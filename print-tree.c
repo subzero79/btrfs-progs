@@ -1066,13 +1066,23 @@ void btrfs_print_tree(struct btrfs_root *root, struct extent_buffer *eb, int fol
 				(unsigned long long)btrfs_header_owner(eb));
 			continue;
 		}
-		if (btrfs_is_leaf(next) &&
-		    btrfs_header_level(eb) != 1)
-			BUG();
 		if (btrfs_header_level(next) !=
-			btrfs_header_level(eb) - 1)
-			BUG();
-		btrfs_print_tree(root, next, 1);
+		    btrfs_header_level(eb) - 1) {
+			fprintf(stderr, "TREE CORRUPTION detected at %llu, "
+				"slot %d pointing at %llu.\n"
+				"\tExpected child level: %d, found %d\n"
+				"\tExpected tree/transid: %llu/%llu,"
+				" found %llu/%llu\n",
+				eb->start, i, next->start,
+				btrfs_header_level(eb) - 1,
+				btrfs_header_level(next),
+				(unsigned long long)btrfs_header_owner(eb),
+				(unsigned long long)btrfs_header_generation(eb),
+				(unsigned long long)btrfs_header_owner(next),
+				(unsigned long long)
+				btrfs_header_generation(next));
+		} else
+			btrfs_print_tree(root, next, 1);
 		free_extent_buffer(next);
 	}
 }

@@ -33,6 +33,7 @@
 #include <zlib.h>
 #include <regex.h>
 #include <getopt.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/xattr.h>
 
@@ -221,7 +222,8 @@ again:
 	return 0;
 }
 
-static int copy_one_inline(int fd, struct btrfs_path *path, u64 pos)
+static int copy_one_inline(int fd, struct btrfs_path *path, u64 pos,
+			   u64 *bytes_written)
 {
 	struct extent_buffer *leaf = path->nodes[0];
 	struct btrfs_file_extent_item *fi;
@@ -245,6 +247,7 @@ static int copy_one_inline(int fd, struct btrfs_path *path, u64 pos)
 	compress = btrfs_file_extent_compression(leaf, fi);
 	if (compress == BTRFS_COMPRESS_NONE) {
 		done = pwrite(fd, buf, len, pos);
+		*bytes_written += done;
 		if (done < len) {
 			fprintf(stderr, "Short inline write, wanted %d, did "
 				"%zd: %d\n", len, done, errno);
@@ -268,6 +271,7 @@ static int copy_one_inline(int fd, struct btrfs_path *path, u64 pos)
 
 	done = pwrite(fd, outbuf, ram_size, pos);
 	free(outbuf);
+	*bytes_written += done;
 	if (done < ram_size) {
 		fprintf(stderr, "Short compressed inline write, wanted %Lu, "
 			"did %zd: %d\n", ram_size, done, errno);
@@ -279,7 +283,8 @@ static int copy_one_inline(int fd, struct btrfs_path *path, u64 pos)
 
 static int copy_one_extent(struct btrfs_root *root, int fd,
 			   struct extent_buffer *leaf,
-			   struct btrfs_file_extent_item *fi, u64 pos)
+			   struct btrfs_file_extent_item *fi, u64 pos,
+			   u64 *bytes_written)
 {
 	struct btrfs_multi_bio *multi = NULL;
 	struct btrfs_device *device;
@@ -310,7 +315,7 @@ static int copy_one_extent(struct btrfs_root *root, int fd,
 	if (compress == BTRFS_COMPRESS_NONE)
 		bytenr += offset;
 
-	if (verbose && offset)
+	if (verbose > 1 && offset)
 		printf("offset is %Lu\n", offset);
 	/* we found a hole */
 	if (disk_size == 0)
@@ -409,6 +414,7 @@ again:
 		total += done;
 	}
 out:
+	*bytes_written += total;
 	free(inbuf);
 	free(outbuf);
 	return ret;
@@ -549,6 +555,95 @@ out:
 	return ret;
 }
 
+#define _INVALID_SIZE ((off_t)~0ULL)
+static int stat_from_inode(struct stat *st, struct btrfs_root *root,
+			   struct btrfs_key *key)
+{
+	static struct btrfs_path *path;
+	struct btrfs_inode_item *inode_item;
+	struct btrfs_timespec *ts;
+	struct extent_buffer *eb;
+
+	if (!path)
+		path = btrfs_alloc_path();
+
+	memset(st, 0, sizeof(*st));
+	st->st_size = _INVALID_SIZE;
+
+	if (!path) {
+		fprintf(stderr, "Ran out of memory\n");
+		return -ENOMEM;
+	}
+
+	if (btrfs_lookup_inode(NULL, root, path, key, 0)) {
+		btrfs_release_path(path);
+		return -ENOENT;
+	}
+
+	inode_item = btrfs_item_ptr(path->nodes[0], path->slots[0],
+				    struct btrfs_inode_item);
+	eb = path->nodes[0];
+
+	st->st_size = btrfs_inode_size(eb, inode_item);
+	st->st_uid = btrfs_inode_uid(eb, inode_item);
+	st->st_gid = btrfs_inode_gid(eb, inode_item);
+	st->st_mode = btrfs_inode_mode(eb, inode_item);
+
+	ts = btrfs_inode_atime(eb, inode_item);
+	st->st_atim.tv_sec = ts->sec;
+	st->st_atim.tv_nsec = ts->nsec;
+
+	ts = btrfs_inode_mtime(eb, inode_item);
+	st->st_mtim.tv_sec = ts->sec;
+	st->st_mtim.tv_nsec = ts->nsec;
+
+	ts = btrfs_inode_ctime(eb, inode_item);
+	st->st_ctim.tv_sec = ts->sec;
+	st->st_ctim.tv_nsec = ts->nsec;
+
+	btrfs_release_path(path);
+	return 0;
+}
+
+static void set_fd_attrs(int fd, const struct stat *st, const char *file)
+{
+	struct timeval tv[2];
+	if (st->st_size == _INVALID_SIZE)
+		return;
+
+	tv[0].tv_sec = st->st_atim.tv_sec;
+	tv[0].tv_usec = st->st_atim.tv_nsec/1000;
+	tv[1].tv_sec = st->st_mtim.tv_sec;
+	tv[1].tv_usec = st->st_mtim.tv_nsec/1000;
+	if (S_ISREG(st->st_mode) && ftruncate(fd, st->st_size) == -1)
+		fprintf(stderr, "failed to set file size on %s\n",
+			file);
+	if (fchown(fd, st->st_uid, st->st_gid) == -1)
+		fprintf(stderr, "failed to set uid/gid on %s\n",
+			file);
+	if (fchmod(fd, st->st_mode) == -1)
+		fprintf(stderr, "failed to set permissions on %s\n",
+			file);
+	if (futimes(fd, tv) == -1)
+		fprintf(stderr, "failed to set file times on %s\n",
+			file);
+}
+
+static int set_file_attrs(const char *output_rootdir, const char *file,
+			  const struct stat *st)
+{
+	int fd;
+	static char path[4096];
+	snprintf(path, sizeof(path), "%s%s", output_rootdir, file);
+	fd = open(path, O_RDONLY|O_NOATIME);
+	if (fd == -1) {
+		fprintf(stderr, "failed to open %s\n", path_name);
+		return -1;
+	}
+	set_fd_attrs(fd, st, path);
+	close(fd);
+	return 0;
+}
 
 static int copy_file(struct btrfs_root *root, int fd, struct btrfs_key *key,
 		     const char *file)
@@ -556,27 +651,24 @@ static int copy_file(struct btrfs_root *root, int fd, struct btrfs_key *key,
 	struct extent_buffer *leaf;
 	struct btrfs_path *path;
 	struct btrfs_file_extent_item *fi;
-	struct btrfs_inode_item *inode_item;
 	struct btrfs_key found_key;
 	int ret;
 	int extent_type;
 	int compression;
 	int loops = 0;
-	u64 found_size = 0;
-
+	u64 bytes_written, next_pos = 0ULL;
+	u64 total_written = 0ULL;
+#define MAYBE_NL (verbose && (next_pos >> display_shift) ? "\n" : "")
+	const u64 display_shift = 16;
+	struct stat st;
+	int dont_ask = 0;
 	path = btrfs_alloc_path();
 	if (!path) {
 		fprintf(stderr, "Ran out of memory\n");
 		return -ENOMEM;
 	}
 
-	ret = btrfs_lookup_inode(NULL, root, path, key, 0);
-	if (ret == 0) {
-		inode_item = btrfs_item_ptr(path->nodes[0], path->slots[0],
-				    struct btrfs_inode_item);
-		found_size = btrfs_inode_size(path->nodes[0], inode_item);
-	}
-	btrfs_release_path(path);
+	stat_from_inode(&st, root, key);
 
 	key->offset = 0;
 	key->type = BTRFS_EXTENT_DATA_KEY;
@@ -605,9 +697,21 @@ static int copy_file(struct btrfs_root *root, int fd, struct btrfs_key *key,
 	}
 
 	while (1) {
-		if (loops >= 0 && loops++ >= 1024) {
+		int problem = 0;
+		if (st.st_size == _INVALID_SIZE && next_pos > st.st_size) {
+			fprintf(stderr, "%swriting at offset %llu beyond size "
+				"of file (%llu)\n",
+				MAYBE_NL, next_pos, st.st_size);
+			problem = 1;
+		}
+		if ((++loops % 1024) == 0 && (next_pos / loops < 4096)) {
+			fprintf(stderr, "%smany loops (%d) and little progress "
+				"(%llu bytes)\n", 
+				MAYBE_NL, loops, next_pos);
+			problem = 1;
+		}
+		if (problem && !dont_ask && loops++) {
 			enum loop_response resp;
-
 			resp = ask_to_continue(file);
 			if (resp == LOOP_STOP)
 				break;
@@ -625,7 +729,7 @@ static int copy_file(struct btrfs_root *root, int fd, struct btrfs_key *key,
 					return ret;
 				} else if (ret) {
 					/* No more leaves to search */
-					btrfs_free_path(path);
+					ret = 0;
 					goto set_size;
 				}
 				leaf = path->nodes[0];
@@ -644,45 +748,65 @@ static int copy_file(struct btrfs_root *root, int fd, struct btrfs_key *key,
 		if (compression >= BTRFS_COMPRESS_LAST) {
 			fprintf(stderr, "Don't support compression yet %d\n",
 				compression);
-			btrfs_free_path(path);
-			return -1;
+			ret = -1;
+			goto set_size;
 		}
+		if (found_key.offset < next_pos) {
+			fprintf(stderr, "extent overlap, %llu < %llu\n",
+				found_key.offset, next_pos);
+			ret = -1;
+			goto set_size;
+		} else if (found_key.offset > next_pos)
+			fprintf(stderr, "hole at %llu (%llu bytes)\n",
+				next_pos, found_key.offset - next_pos);
 
+		bytes_written = 0ULL;
 		if (extent_type == BTRFS_FILE_EXTENT_PREALLOC)
 			goto next;
 		if (extent_type == BTRFS_FILE_EXTENT_INLINE) {
-			ret = copy_one_inline(fd, path, found_key.offset);
-			if (ret) {
-				btrfs_free_path(path);
-				return -1;
-			}
+			ret = copy_one_inline(fd, path, found_key.offset,
+					      &bytes_written);
 		} else if (extent_type == BTRFS_FILE_EXTENT_REG) {
 			ret = copy_one_extent(root, fd, leaf, fi,
-					      found_key.offset);
-			if (ret) {
-				btrfs_free_path(path);
-				return ret;
-			}
+					      found_key.offset, &bytes_written);
 		} else {
 			printf("Weird extent type %d\n", extent_type);
+		}
+		total_written += bytes_written;
+		if (verbose && 
+		    ((next_pos +  bytes_written) >> display_shift) > 
+		    (next_pos >> display_shift))
+			fprintf(stderr, "+");
+		next_pos = found_key.offset + bytes_written;
+		if (ret) {
+			fprintf(stderr, "ERROR after writing %llu bytes\n",
+				total_written);
+			ret = -1;
+			goto set_size;
 		}
 next:
 		path->slots[0]++;
 	}
 
-	btrfs_free_path(path);
 set_size:
-	if (found_size) {
-		ret = ftruncate(fd, (loff_t)found_size);
-		if (ret)
-			return ret;
-	}
+	btrfs_free_path(path);
+
+	printf(MAYBE_NL);
 	if (get_xattrs) {
 		ret = set_file_xattrs(root, key->objectid, fd, file);
 		if (ret)
-			return ret;
+			fprintf(stderr, "failed to set xattrs on %s\n",
+				file);
 	}
-	return 0;
+
+	if (st.st_size != _INVALID_SIZE && (st.st_size > next_pos || 
+					    (st.st_size < next_pos &&
+					     (st.st_size >> 12) !=
+					     (next_pos >> 12) - 1)))
+		fprintf(stderr, "size mismatch: extpected %llu, got %llu (written %llu)\n",
+			st.st_size, next_pos, total_written);	
+	set_fd_attrs(fd, &st, file);
+	return ret;
 }
 
 static int search_dir(struct btrfs_root *root, struct btrfs_key *key,
@@ -693,6 +817,7 @@ static int search_dir(struct btrfs_root *root, struct btrfs_key *key,
 	struct extent_buffer *leaf;
 	struct btrfs_dir_item *dir_item;
 	struct btrfs_key found_key, location;
+	struct stat dirst;
 	char filename[BTRFS_NAME_LEN + 1];
 	unsigned long name_ptr;
 	int name_len;
@@ -706,6 +831,8 @@ static int search_dir(struct btrfs_root *root, struct btrfs_key *key,
 		fprintf(stderr, "Ran out of memory\n");
 		return -ENOMEM;
 	}
+
+	stat_from_inode(&dirst, root, key);
 
 	key->offset = 0;
 	key->type = BTRFS_DIR_INDEX_KEY;
@@ -824,7 +951,7 @@ static int search_dir(struct btrfs_root *root, struct btrfs_key *key,
 				ret = 0;
 			}
 			if (verbose)
-				printf("Restoring %s\n", path_name);
+				printf("Restoring %s\n", filename);
 			if (dry_run)
 				goto next;
 			fd = open(path_name, O_CREAT|O_WRONLY, 0644);
@@ -898,7 +1025,7 @@ static int search_dir(struct btrfs_root *root, struct btrfs_key *key,
 			}
 
 			if (verbose)
-				printf("Restoring %s\n", path_name);
+				printf("Searching directory %s\n", path_name);
 
 			errno = 0;
 			if (dry_run)
@@ -930,6 +1057,8 @@ static int search_dir(struct btrfs_root *root, struct btrfs_key *key,
 next:
 		path->slots[0]++;
 	}
+
+	set_file_attrs(output_rootdir, in_dir, &dirst);
 
 	if (verbose)
 		printf("Done searching %s\n", in_dir);

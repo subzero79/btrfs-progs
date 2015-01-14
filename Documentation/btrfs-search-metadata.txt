@@ -1,0 +1,57 @@
+btrfs-search-metadata(8)
+========================
+
+NAME
+----
+btrfs-search-metadata - search for certain nodes or leaves in btrfs metadata
+
+SYNOPSIS
+--------
+*btrfs-search-metadata* [options] <device>
+
+DESCRIPTION
+-----------
+*btrfs-search-metadata* is used to dump the meta data of a device, or to 
+selectively dump nodes or leaves matching certain conditions.
+
+Unlike `btrfs-dump-tree`, this tool will also find tree "branches" that
+are disconnected from the root tree, and previous meta data copies. If a
+corruption occurs, this may be useful for finding old, still healthy copies.
+
+This is maybe useful for analyzing filesystem state or inconsistence and has
+a positive educational effect on understanding the internal structure.
+<device> is the device file where the filesystem is stored.
+
+OPTIONS
+-------
+-k <object id>/<key type>/<offset>::
+Search for leaves and nodes containing the given key.
+-g <generation>::
+Search for leaves and nodes with the given generation (transid).
+-l <level>::
+Search for nodes with the given level, or leaves (level 0).
+-t <object id>::
+Search for leaves and nodes with the given owner object ID.
+-L::
+dump full content of found nodes or leaves, like btrfs-debug-tree.
+
+EXIT STATUS
+-----------
+*btrfs-search-metadata* will return 0 if no error happened.
+If any problems happened, 1 will be returned.
+
+EXAMPLE
+-------
+
+`btrfs-search-metadata -t 260 -l 0 -k 256/1/0 /dev/sda`
+
+Search the btrfs file system on `/dev/sda` for leaves belonging to
+subvolume 260 and containing the first inode item (type 1: inode item,
+object ID 256: first available object ID).
+
+See `ctree.h` in the btrfs source code and the btrfs Wiki for 
+assigned object IDs and key types.
+
+SEE ALSO
+--------
+`mkfs.btrfs`(8), `btrfs-debug-tree`(8)
