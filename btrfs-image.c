@@ -16,8 +16,6 @@
  * Boston, MA 021110-1307, USA.
  */
 
-#define _XOPEN_SOURCE 500
-#define _GNU_SOURCE 1
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2466,6 +2464,9 @@ static void print_usage(void)
 	fprintf(stderr, "\t-s      \tsanitize file names, use once to just use garbage, use twice if you want crc collisions\n");
 	fprintf(stderr, "\t-w      \twalk all trees instead of using extent tree, do this if your extent tree is broken\n");
 	fprintf(stderr, "\t-m	   \trestore for multiple devices\n");
+	fprintf(stderr, "\n");
+	fprintf(stderr, "\tIn the dump mode, source is the btrfs device and target is the output file (use '-' for stdout).\n");
+	fprintf(stderr, "\tIn the restore mode, source is the dumped image and target is the btrfs device/file.\n");
 	exit(1);
 }
 

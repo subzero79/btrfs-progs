@@ -16,8 +16,6 @@
  * Boston, MA 021110-1307, USA.
  */
 
-#define _XOPEN_SOURCE 500
-#define _GNU_SOURCE 1
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -8403,19 +8401,6 @@ out:
 	return bad_roots;
 }
 
-static struct option long_options[] = {
-	{ "super", 1, NULL, 's' },
-	{ "repair", 0, NULL, 0 },
-	{ "init-csum-tree", 0, NULL, 0 },
-	{ "init-extent-tree", 0, NULL, 0 },
-	{ "check-data-csum", 0, NULL, 0 },
-	{ "backup", 0, NULL, 0 },
-	{ "subvol-extents", 1, NULL, 'E' },
-	{ "qgroup-report", 0, NULL, 'Q' },
-	{ "tree-root", 1, NULL, 'r' },
-	{ NULL, 0, NULL, 0}
-};
-
 const char * const cmd_check_usage[] = {
 	"btrfs check [options] <device>",
 	"Check an unmounted btrfs filesystem.",
@@ -8443,13 +8428,30 @@ int cmd_check(int argc, char **argv)
 	char uuidbuf[BTRFS_UUID_UNPARSED_SIZE];
 	int ret;
 	u64 num;
-	int option_index = 0;
 	int init_csum_tree = 0;
+	int readonly = 0;
 	int qgroup_report = 0;
 	enum btrfs_open_ctree_flags ctree_flags = OPEN_CTREE_EXCLUSIVE;
 
 	while(1) {
 		int c;
+		int option_index = 0;
+		enum { OPT_REPAIR = 257, OPT_INIT_CSUM, OPT_INIT_EXTENT,
+			OPT_CHECK_CSUM, OPT_READONLY };
+		static const struct option long_options[] = {
+			{ "super", 1, NULL, 's' },
+			{ "repair", 0, NULL, OPT_REPAIR },
+			{ "readonly", 0, NULL, OPT_READONLY },
+			{ "init-csum-tree", 0, NULL, OPT_INIT_CSUM },
+			{ "init-extent-tree", 0, NULL, OPT_INIT_EXTENT },
+			{ "check-data-csum", 0, NULL, OPT_CHECK_CSUM },
+			{ "backup", 0, NULL, 'b' },
+			{ "subvol-extents", 1, NULL, 'E' },
+			{ "qgroup-report", 0, NULL, 'Q' },
+			{ "tree-root", 1, NULL, 'r' },
+			{ NULL, 0, NULL, 0}
+		};
+
 		c = getopt_long(argc, argv, "as:br:", long_options,
 				&option_index);
 		if (c < 0)
@@ -8483,29 +8485,41 @@ int cmd_check(int argc, char **argv)
 			case '?':
 			case 'h':
 				usage(cmd_check_usage);
-		}
-		if (option_index == 1) {
-			printf("enabling repair mode\n");
-			repair = 1;
-			ctree_flags |= OPEN_CTREE_WRITES;
-		} else if (option_index == 2) {
-			printf("Creating a new CRC tree\n");
-			init_csum_tree = 1;
-			repair = 1;
-			ctree_flags |= OPEN_CTREE_WRITES;
-		} else if (option_index == 3) {
-			init_extent_tree = 1;
-			ctree_flags |= (OPEN_CTREE_WRITES |
-					OPEN_CTREE_NO_BLOCK_GROUPS);
-			repair = 1;
-		} else if (option_index == 4) {
-			check_data_csum = 1;
+			case OPT_REPAIR:
+				printf("enabling repair mode\n");
+				repair = 1;
+				ctree_flags |= OPEN_CTREE_WRITES;
+				break;
+			case OPT_READONLY:
+				readonly = 1;
+				break;
+			case OPT_INIT_CSUM:
+				printf("Creating a new CRC tree\n");
+				init_csum_tree = 1;
+				repair = 1;
+				ctree_flags |= OPEN_CTREE_WRITES;
+				break;
+			case OPT_INIT_EXTENT:
+				init_extent_tree = 1;
+				ctree_flags |= (OPEN_CTREE_WRITES |
+						OPEN_CTREE_NO_BLOCK_GROUPS);
+				repair = 1;
+				break;
+			case OPT_CHECK_CSUM:
+				check_data_csum = 1;
+				break;
 		}
 	}
 	argc = argc - optind;
 
 	if (check_argc_exact(argc, 1))
 		usage(cmd_check_usage);
+
+	/* This check is the only reason for --readonly to exist */
+	if (readonly && repair) {
+		fprintf(stderr, "Repair options are not compatible with --readonly\n");
+		exit(1);
+	}
 
 	radix_tree_init();
 	cache_tree_init(&root_cache);

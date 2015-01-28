@@ -16,8 +16,8 @@
  * Boston, MA 021110-1307, USA.
  */
 
-#ifndef __DISKIO__
-#define __DISKIO__
+#ifndef __BTRFS_DISK_IO_H__
+#define __BTRFS_DISK_IO_H__
 
 #define BTRFS_SUPER_INFO_OFFSET (64 * 1024)
 #define BTRFS_SUPER_INFO_SIZE 4096
@@ -26,13 +26,13 @@
 #define BTRFS_SUPER_MIRROR_SHIFT 12
 
 enum btrfs_open_ctree_flags {
-	OPEN_CTREE_WRITES		= 1,
-	OPEN_CTREE_PARTIAL		= 2,
-	OPEN_CTREE_BACKUP_ROOT		= 4,
-	OPEN_CTREE_RECOVER_SUPER	= 8,
-	OPEN_CTREE_RESTORE		= 16,
-	OPEN_CTREE_NO_BLOCK_GROUPS	= 32,
-	OPEN_CTREE_EXCLUSIVE		= 64,
+	OPEN_CTREE_WRITES		= (1 << 0),
+	OPEN_CTREE_PARTIAL		= (1 << 1),
+	OPEN_CTREE_BACKUP_ROOT		= (1 << 2),
+	OPEN_CTREE_RECOVER_SUPER	= (1 << 3),
+	OPEN_CTREE_RESTORE		= (1 << 4),
+	OPEN_CTREE_NO_BLOCK_GROUPS	= (1 << 5),
+	OPEN_CTREE_EXCLUSIVE		= (1 << 6),
 };
 
 static inline u64 btrfs_sb_offset(int mirror)
@@ -110,7 +110,8 @@ int verify_tree_block_csum_silent(struct extent_buffer *buf, u16 csum_size);
 int btrfs_read_buffer(struct extent_buffer *buf, u64 parent_transid);
 int write_and_map_eb(struct btrfs_trans_handle *trans, struct btrfs_root *root,
 		     struct extent_buffer *eb);
-#endif
 
 /* raid6.c */
 void raid6_gen_syndrome(int disks, size_t bytes, void **ptrs);
+
+#endif

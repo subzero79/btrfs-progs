@@ -16,8 +16,8 @@
  * Boston, MA 021110-1307, USA.
  */
 
-#ifndef __KERNCOMPAT
-#define __KERNCOMPAT
+#ifndef __KERNCOMPAT_H__
+#define __KERNCOMPAT_H__
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,7 +30,9 @@
 #include <linux/types.h>
 #include <stdint.h>
 
-#ifndef __glibc__
+#include <features.h>
+
+#ifndef __GLIBC__
 #define BTRFS_DISABLE_BACKTRACE
 #define __always_inline __inline __attribute__ ((__always_inline__))
 #endif
@@ -349,7 +351,6 @@ struct __una_u64 { __le64 x; } __attribute__((__packed__));
 #define put_unaligned_le32(val,p) (((struct __una_u32 *)(p))->x = cpu_to_le32(val))
 #define get_unaligned_le64(p) le64_to_cpu(((const struct __una_u64 *)(p))->x)
 #define put_unaligned_le64(val,p) (((struct __una_u64 *)(p))->x = cpu_to_le64(val))
-#endif
 
 #ifndef true
 #define true 1
@@ -358,4 +359,6 @@ struct __una_u64 { __le64 x; } __attribute__((__packed__));
 
 #ifndef noinline
 #define noinline
+#endif
+
 #endif

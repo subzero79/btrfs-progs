@@ -56,10 +56,10 @@ static int cmd_add_dev(int argc, char **argv)
 
 	while (1) {
 		int long_index;
-		static struct option long_options[] = {
+		static const struct option long_options[] = {
 			{ "nodiscard", optional_argument, NULL, 'K'},
 			{ "force", no_argument, NULL, 'f'},
-			{ 0, 0, 0, 0 }
+			{ NULL, 0, NULL, 0}
 		};
 		int c = getopt_long(argc, argv, "Kf", long_options,
 					&long_index);
@@ -214,9 +214,9 @@ static int cmd_scan_dev(int argc, char **argv)
 	optind = 1;
 	while (1) {
 		int long_index;
-		static struct option long_options[] = {
+		static const struct option long_options[] = {
 			{ "all-devices", no_argument, NULL, 'd'},
-			{ 0, 0, 0, 0 },
+			{ NULL, 0, NULL, 0}
 		};
 		int c = getopt_long(argc, argv, "d", long_options,
 				    &long_index);
@@ -454,7 +454,8 @@ const char * const cmd_device_usage_usage[] = {
 	"btrfs device usage [options] <path> [<path>..]",
 	"Show detailed information about internal allocations in devices.",
 	"-b|--raw           raw numbers in bytes",
-	"-h                 human friendly numbers, base 1024 (default)",
+	"-h|--human-readable",
+	"                   human friendly numbers, base 1024 (default)",
 	"-H                 human friendly numbers, base 1000",
 	"--iec              use 1024 as a base (KiB, MiB, GiB, TiB)",
 	"--si               use 1000 as a base (kB, MB, GB, TB)",
@@ -509,8 +510,11 @@ int cmd_device_usage(int argc, char **argv)
 			{ "mbytes", no_argument, NULL, 'm'},
 			{ "gbytes", no_argument, NULL, 'g'},
 			{ "tbytes", no_argument, NULL, 't'},
-			{ "si", no_argument, NULL, 256},
-			{ "iec", no_argument, NULL, 257},
+			{ "si", no_argument, NULL, GETOPT_VAL_SI},
+			{ "iec", no_argument, NULL, GETOPT_VAL_IEC},
+			{ "human-readable", no_argument, NULL,
+				GETOPT_VAL_HUMAN_READABLE},
+			{ NULL, 0, NULL, 0 }
 		};
 		int c = getopt_long(argc, argv, "bhHkmgt", long_options,
 				&long_index);
@@ -533,16 +537,17 @@ int cmd_device_usage(int argc, char **argv)
 		case 't':
 			units_set_base(&unit_mode, UNITS_TBYTES);
 			break;
+		case GETOPT_VAL_HUMAN_READABLE:
 		case 'h':
 			unit_mode = UNITS_HUMAN_BINARY;
 			break;
 		case 'H':
 			unit_mode = UNITS_HUMAN_DECIMAL;
 			break;
-		case 256:
+		case GETOPT_VAL_SI:
 			units_set_mode(&unit_mode, UNITS_DECIMAL);
 			break;
-		case 257:
+		case GETOPT_VAL_IEC:
 			units_set_mode(&unit_mode, UNITS_BINARY);
 			break;
 		default:

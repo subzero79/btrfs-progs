@@ -16,8 +16,6 @@
  * Boston, MA 021110-1307, USA.
  */
 
-#define _XOPEN_SOURCE 500
-#define _GNU_SOURCE 1
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
@@ -112,15 +110,6 @@ static void print_usage(void)
 	exit(1);
 }
 
-static struct option long_options[] = {
-	/* { "byte-count", 1, NULL, 'b' }, */
-	{ "logical", 1, NULL, 'l' },
-	{ "copy", 1, NULL, 'c' },
-	{ "output", 1, NULL, 'o' },
-	{ "bytes", 1, NULL, 'b' },
-	{ NULL, 0, NULL, 0}
-};
-
 int main(int ac, char **av)
 {
 	struct cache_tree root_cache;
@@ -130,13 +119,22 @@ int main(int ac, char **av)
 	char *output_file = NULL;
 	u64 logical = 0;
 	int ret = 0;
-	int option_index = 0;
 	u64 copy = 0;
 	u64 bytes = 0;
 	int out_fd = 0;
 
 	while(1) {
 		int c;
+		int option_index = 0;
+		static const struct option long_options[] = {
+			/* { "byte-count", 1, NULL, 'b' }, */
+			{ "logical", 1, NULL, 'l' },
+			{ "copy", 1, NULL, 'c' },
+			{ "output", 1, NULL, 'o' },
+			{ "bytes", 1, NULL, 'b' },
+			{ NULL, 0, NULL, 0}
+		};
+
 		c = getopt_long(ac, av, "l:c:o:b:", long_options,
 				&option_index);
 		if (c < 0)

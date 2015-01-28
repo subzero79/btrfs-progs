@@ -14,7 +14,6 @@
  * Boston, MA 021110-1307, USA.
  */
 
-#define _XOPEN_SOURCE 500
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -126,7 +125,8 @@ static const char * const cmd_filesystem_df_usage[] = {
        "btrfs filesystem df [options] <path>",
        "Show space usage information for a mount point",
 	"-b|--raw           raw numbers in bytes",
-	"-h                 human friendly numbers, base 1024 (default)",
+	"-h|--human-readable",
+	"                   human friendly numbers, base 1024 (default)",
 	"-H                 human friendly numbers, base 1000",
 	"--iec              use 1024 as a base (KiB, MiB, GiB, TiB)",
 	"--si               use 1000 as a base (kB, MB, GB, TB)",
@@ -218,6 +218,9 @@ static int cmd_filesystem_df(int argc, char **argv)
 			{ "tbytes", no_argument, NULL, 't'},
 			{ "si", no_argument, NULL, GETOPT_VAL_SI},
 			{ "iec", no_argument, NULL, GETOPT_VAL_IEC},
+			{ "human-readable", no_argument, NULL,
+				GETOPT_VAL_HUMAN_READABLE},
+			{ NULL, 0, NULL, 0 }
 		};
 		int c = getopt_long(argc, argv, "bhHkmgt", long_options,
 					&long_index);
@@ -239,6 +242,7 @@ static int cmd_filesystem_df(int argc, char **argv)
 		case 't':
 			units_set_base(&unit_mode, UNITS_TBYTES);
 			break;
+		case GETOPT_VAL_HUMAN_READABLE:
 		case 'h':
 			unit_mode = UNITS_HUMAN_BINARY;
 			break;
@@ -700,7 +704,7 @@ static int has_seed_devices(struct btrfs_fs_devices *fs_devices)
 }
 
 static int search_umounted_fs_uuids(struct list_head *all_uuids,
-				    char *search)
+				    char *search, int *found)
 {
 	struct btrfs_fs_devices *cur_fs, *fs_copy;
 	struct list_head *fs_uuids;
@@ -717,7 +721,8 @@ static int search_umounted_fs_uuids(struct list_head *all_uuids,
 		if (search) {
 			if (uuid_search(cur_fs, search) == 0)
 				continue;
-			ret = 1;
+			if (found)
+				*found = 1;
 		}
 
 		/* skip all fs already shown as mounted fs */
@@ -833,10 +838,10 @@ static int cmd_show(int argc, char **argv)
 
 	while (1) {
 		int long_index;
-		static struct option long_options[] = {
+		static const struct option long_options[] = {
 			{ "all-devices", no_argument, NULL, 'd'},
 			{ "mounted", no_argument, NULL, 'm'},
-			{ NULL, no_argument, NULL, 0 },
+			{ NULL, 0, NULL, 0 }
 		};
 		int c = getopt_long(argc, argv, "dm", long_options,
 					&long_index);
@@ -922,8 +927,8 @@ devs_only:
 		return 1;
 	}
 
-	found = search_umounted_fs_uuids(&all_uuids, search);
-	if (found < 0) {
+	ret = search_umounted_fs_uuids(&all_uuids, search, &found);
+	if (ret < 0) {
 		fprintf(stderr,
 			"ERROR: %d while searching target device\n", ret);
 		return 1;

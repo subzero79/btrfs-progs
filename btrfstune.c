@@ -16,8 +16,6 @@
  * Boston, MA 021110-1307, USA.
  */
 
-#define _XOPEN_SOURCE 500
-#define _GNU_SOURCE 1
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -33,6 +31,7 @@
 #include "version.h"
 
 static char *device;
+static int force = 0;
 
 static int update_seeding_flag(struct btrfs_root *root, int set_flag)
 {
@@ -44,8 +43,10 @@ static int update_seeding_flag(struct btrfs_root *root, int set_flag)
 	super_flags = btrfs_super_flags(disk_super);
 	if (set_flag) {
 		if (super_flags & BTRFS_SUPER_FLAG_SEEDING) {
-			fprintf(stderr, "seeding flag is already set on %s\n",
-				device);
+			if (force)
+				return 0;
+			else
+				fprintf(stderr, "seeding flag is already set on %s\n", device);
 			return 1;
 		}
 		super_flags |= BTRFS_SUPER_FLAG_SEEDING;
@@ -104,18 +105,18 @@ static void print_usage(void)
 	fprintf(stderr, "\t-S value\tpositive value will enable seeding, zero to disable, negative is not allowed\n");
 	fprintf(stderr, "\t-r \t\tenable extended inode refs\n");
 	fprintf(stderr, "\t-x \t\tenable skinny metadata extent refs\n");
-	fprintf(stderr, "\t-f \t\tforce to clear flags, make sure that you are aware of the dangers\n");
+	fprintf(stderr, "\t-f \t\tforce to set or clear flags, make sure that you are aware of the dangers\n");
 }
 
 int main(int argc, char *argv[])
 {
 	struct btrfs_root *root;
 	int success = 0;
+	int total = 0;
 	int extrefs_flag = 0;
 	int seeding_flag = 0;
 	u64 seeding_value = 0;
 	int skinny_flag = 0;
-	int force = 0;
 	int ret;
 
 	optind = 1;
@@ -188,19 +189,22 @@ int main(int argc, char *argv[])
 		ret = update_seeding_flag(root, seeding_value);
 		if (!ret)
 			success++;
+		total++;
 	}
 
 	if (extrefs_flag) {
 		enable_extrefs_flag(root);
 		success++;
+		total++;
 	}
 
 	if (skinny_flag) {
 		enable_skinny_metadata(root);
 		success++;
+		total++;
 	}
 
-	if (success > 0) {
+	if (success == total) {
 		ret = 0;
 	} else {
 		root->fs_info->readonly = 1;

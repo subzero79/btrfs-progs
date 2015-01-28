@@ -208,7 +208,7 @@ static const char * const cmd_subvol_delete_usage[] = {
 
 static int cmd_subvol_delete(int argc, char **argv)
 {
-	int	res, len, e, ret = 0;
+	int	res, e, ret = 0;
 	int cnt;
 	int fd = -1;
 	struct btrfs_ioctl_vol_args	args;
@@ -219,15 +219,15 @@ static int cmd_subvol_delete(int argc, char **argv)
 	DIR	*dirstream = NULL;
 	int verbose = 0;
 	int commit_mode = 0;
-	struct option long_options[] = {
-		{"commit-after", no_argument, NULL, 'c'},  /* commit mode 1 */
-		{"commit-each", no_argument, NULL, 'C'},  /* commit mode 2 */
-		{NULL, 0, NULL, 0}
-	};
 
 	optind = 1;
 	while (1) {
 		int c;
+		static const struct option long_options[] = {
+			{"commit-after", no_argument, NULL, 'c'},  /* commit mode 1 */
+			{"commit-each", no_argument, NULL, 'C'},  /* commit mode 2 */
+			{NULL, 0, NULL, 0}
+		};
 
 		c = getopt_long(argc, argv, "cC", long_options, NULL);
 		if (c < 0)
@@ -286,21 +286,6 @@ again:
 	dupvname = strdup(cpath);
 	vname = basename(dupvname);
 	free(cpath);
-
-	if (!test_issubvolname(vname)) {
-		fprintf(stderr, "ERROR: incorrect subvolume name '%s'\n",
-			vname);
-		ret = 1;
-		goto out;
-	}
-
-	len = strlen(vname);
-	if (len == 0 || len >= BTRFS_VOL_NAME_MAX) {
-		fprintf(stderr, "ERROR: snapshot name too long '%s'\n",
-			vname);
-		ret = 1;
-		goto out;
-	}
 
 	fd = open_file_or_dir(dname, &dirstream);
 	if (fd < 0) {
@@ -406,15 +391,10 @@ static int cmd_subvol_list(int argc, char **argv)
 	int fd = -1;
 	u64 top_id;
 	int ret = -1, uerr = 0;
-	int c;
 	char *subvol;
 	int is_tab_result = 0;
 	int is_list_all = 0;
 	int is_only_in_path = 0;
-	struct option long_options[] = {
-		{"sort", 1, NULL, 'S'},
-		{NULL, 0, NULL, 0}
-	};
 	DIR *dirstream = NULL;
 
 	filter_set = btrfs_list_alloc_filter_set();
@@ -422,6 +402,12 @@ static int cmd_subvol_list(int argc, char **argv)
 
 	optind = 1;
 	while(1) {
+		int c;
+		static const struct option long_options[] = {
+			{"sort", 1, NULL, 'S'},
+			{NULL, 0, NULL, 0}
+		};
+
 		c = getopt_long(argc, argv,
 				    "acdgopqsurRG:C:t", long_options, NULL);
 		if (c < 0)
@@ -565,7 +551,6 @@ out:
 }
 
 static const char * const cmd_snapshot_usage[] = {
-	"btrfs subvolume snapshot [-r] <source> <dest>|[<dest>/]<name>",
 	"btrfs subvolume snapshot [-r] [-i <qgroupid>] <source> <dest>|[<dest>/]<name>",
 	"Create a snapshot of the subvolume",
 	"Create a writable/readonly snapshot of the subvolume <source> with",
